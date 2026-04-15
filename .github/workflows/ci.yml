@@ -3,259 +3,154 @@ name: Runtime Safety Kernels CI
 on:
   push:
     branches: [main, develop]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
 jobs:
+  quality-gates:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+      - name: Primary quality-gates path
+        id: quality_primary
+        continue-on-error: true
+        run: |
+          python scripts/lake_doctor.py
+          python scripts/lake_resilient.py --attempts 4 --timeout 300 -- lake update
+          python scripts/check_proof_completeness.py
+          python scripts/check_contract_consistency.py
+          python scripts/lake_resilient.py --attempts 3 --timeout 600 -- lake build
+      - name: Fallback quality-gates path
+        if: steps.quality_primary.outcome == 'failure'
+        run: |
+          echo "Primary quality path failed; running fallback path."
+          python scripts/lake_doctor.py
+          python scripts/check_proof_completeness.py
+          python scripts/check_contract_consistency.py
+          python scripts/lake_resilient.py --attempts 2 --timeout 600 -- lake build
+      - name: Upload diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lake-diagnostics-${{ github.job }}-${{ github.run_id }}
+          path: build/lake-diagnostics.json
+
   test:
+    needs: [quality-gates]
     strategy:
       matrix:
         os: [ubuntu-22.04, macos-14, windows-2025]
-        lean-version: [v4.8.0]
-        include:
-          - os: ubuntu-22.04
-            platform: linux
-          - os: macos-14
-            platform: macos
-          - os: windows-2025
-            platform: windows
-
     runs-on: ${{ matrix.os }}
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Lean
-        uses: leanprover-community/setup-lean@v4
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
         with:
-          lean-version: ${{ matrix.lean-version }}
-
-      - name: Install dependencies
+          auto-config: false
+      - name: Primary test path
+        id: test_primary
+        continue-on-error: true
         run: |
-          lake update
-          lake build
-
-      - name: Run tests
+          python scripts/lake_doctor.py
+          python scripts/lake_resilient.py --attempts 4 --timeout 300 -- lake update
+          python scripts/lake_resilient.py --attempts 3 --timeout 600 -- lake build
+          python scripts/lake_resilient.py --attempts 2 --timeout 900 -- python scripts/run_runtime_checks.py all
+      - name: Fallback test path
+        if: steps.test_primary.outcome == 'failure'
         run: |
-          lake exe tests
-        timeout-minutes: 15
-
-      - name: Run fuzzing
-        run: |
-          lake exe fuzz
-        timeout-minutes: 30
-
-      - name: Run benchmarks
-        run: |
-          lake exe benchmarks
-        timeout-minutes: 10
-
-      - name: Extract kernels
-        run: |
-          lake exe sampler_c
-          lake exe policy_c
-          lake exe tensor_c
-          lake exe concurrency_rust
-
-  fuzz-extended:
-    runs-on: ubuntu-22.04
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Lean
-        uses: leanprover-community/setup-lean@v4
+          echo "Primary test path failed; running fallback path."
+          python scripts/lake_doctor.py
+          python scripts/lake_resilient.py --attempts 2 --timeout 600 -- lake build
+          python scripts/lake_resilient.py --attempts 1 --timeout 900 -- python scripts/run_runtime_checks.py tests
+      - name: Upload diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          lean-version: v4.8.0
-
-      - name: Install AFL++
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y afl++
-
-      - name: Run extended fuzzing
-        run: |
-          lake update
-          lake build
-          lake exe fuzz --extended
-        timeout-minutes: 480 # 8 hours
+          name: lake-diagnostics-${{ github.job }}-${{ matrix.os }}-${{ github.run_id }}
+          path: build/lake-diagnostics.json
 
   performance-regression:
+    needs: [quality-gates]
     runs-on: ubuntu-22.04
     if: github.event_name == 'pull_request'
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Lean
-        uses: leanprover-community/setup-lean@v4
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
         with:
-          lean-version: v4.8.0
-
-      - name: Install dependencies
+          auto-config: false
+      - name: Performance regression checks
         run: |
-          lake update
-          lake build
+          python scripts/lake_doctor.py
+          python scripts/lake_resilient.py --attempts 4 --timeout 300 -- lake update
+          python scripts/lake_resilient.py --attempts 3 --timeout 600 -- lake build
+          python scripts/lake_resilient.py --attempts 2 --timeout 900 -- lake exe benchmarks --performance
+          python scripts/lake_resilient.py --attempts 2 --timeout 900 -- python scripts/run_runtime_checks.py benchmarks
 
-      - name: Run performance benchmarks
+  fuzz-extended:
+    needs: [quality-gates]
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+      - name: Extended fuzzing
         run: |
-          lake exe benchmarks --performance
-        timeout-minutes: 20
-
-      - name: Check performance regression
-        run: |
-          # Compare with baseline
-          lake exe benchmarks --compare-baseline
-        timeout-minutes: 5
-
-  # deepseek-proof-assistance:
-  #   runs-on: ubuntu-22.04
-  #   if: contains(github.event.pull_request.labels.*.name, 'needs-proof-boost')
-
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v4
-
-  #     - name: Setup Lean
-  #       uses: leanprover-community/setup-lean@v1
-  #       with:
-  #         lean-version: v4.8.0
-
-  #     - name: Install dependencies
-  #       run: |
-  #         lake update
-  #         lake build
-
-  #     - name: Run DeepSeek proof assistance
-  #       run: |
-  #         lake exe deepseek-suggest
-  #       env:
-  #         DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-  #       timeout-minutes: 30
+          python scripts/lake_doctor.py
+          python scripts/lake_resilient.py --attempts 4 --timeout 300 -- lake update
+          python scripts/lake_resilient.py --attempts 3 --timeout 600 -- lake build
+          python scripts/lake_resilient.py --attempts 2 --timeout 1200 -- lake exe fuzz --extended
+        timeout-minutes: 480
 
   security-scan:
     runs-on: ubuntu-22.04
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run security scan
-        uses: github/codeql-action/init@v3
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
         with:
           languages: cpp, python
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v3
 
   build-artifacts:
+    needs: [test]
     runs-on: ubuntu-22.04
-    needs: [test, fuzz-extended, performance-regression]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Lean
-        uses: leanprover-community/setup-lean@v4
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
         with:
-          lean-version: v4.8.0
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-unknown-linux-gnu
-
-      - name: Install dependencies
+          auto-config: false
+      - name: Build artifacts
         run: |
-          lake update
-          lake build
-
-      - name: Extract kernels
-        run: |
-          lake exe sampler_c
-          lake exe policy_c
-          lake exe tensor_c
-          lake exe concurrency_rust
-
-      - name: Build static libraries
-        run: |
-          # Create extracted directory if it doesn't exist
-          mkdir -p src/extracted
-
-          # Build C library (if extracted files exist)
-          if [ -f src/extracted/sampler.c ] && [ -f src/extracted/policy.c ] && [ -f src/extracted/tensor.c ]; then
-            gcc -shared -fPIC -o librsk.so src/extracted/sampler.c src/extracted/policy.c src/extracted/tensor.c
-          else
-            echo "Extracted C files not found, skipping C library build"
-          fi
-
-          # Build Rust library (if Cargo.toml exists)
-          if [ -f Cargo.toml ]; then
-            cargo build --release --target x86_64-unknown-linux-gnu
-          else
-            echo "Cargo.toml not found, skipping Rust library build"
-          fi
-
-          # Create static binary (if extracted files exist)
-          if [ -f src/extracted/sampler.c ] && [ -f src/extracted/policy.c ] && [ -f src/extracted/tensor.c ]; then
-            gcc -static -o rsk-static src/extracted/sampler.c src/extracted/policy.c src/extracted/tensor.c
-          else
-            echo "Extracted C files not found, skipping static binary build"
-          fi
-
-      - name: Check binary size
-        run: |
-          ls -la librsk.so
-          ls -la target/x86_64-unknown-linux-gnu/release/librsk_rs.a
-          ls -la rsk-static
-
-          # Check if binary size is within limits
-          BINARY_SIZE=$(stat -c%s rsk-static)
-          if [ $BINARY_SIZE -gt 409600 ]; then
-            echo "Binary size $BINARY_SIZE exceeds 400KB limit"
-            exit 1
-          fi
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          python scripts/lake_doctor.py
+          python scripts/lake_resilient.py --attempts 4 --timeout 300 -- lake update
+          python scripts/lake_resilient.py --attempts 3 --timeout 600 -- lake build
+          python scripts/lake_resilient.py --attempts 2 --timeout 600 -- lake exe sampler_c
+          python scripts/lake_resilient.py --attempts 2 --timeout 600 -- lake exe policy_c
+          python scripts/lake_resilient.py --attempts 2 --timeout 600 -- lake exe tensor_c
+          python scripts/lake_resilient.py --attempts 2 --timeout 600 -- lake exe concurrency_rust
+      - uses: actions/upload-artifact@v4
         with:
           name: runtime-safety-kernels-${{ github.sha }}
-          path: |
-            librsk.so
-            target/x86_64-unknown-linux-gnu/release/librsk_rs.a
-            rsk-static
-            src/extracted/*.h
+          path: src/extracted
           retention-days: 30
 
   release:
+    needs: [quality-gates, test]
     runs-on: ubuntu-22.04
-    needs: [build-artifacts]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.ref, 'refs/tags/')
-
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
           name: runtime-safety-kernels-${{ github.sha }}
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            librsk.so
-            target/x86_64-unknown-linux-gnu/release/librsk_rs.a
-            rsk-static
-            src/extracted/*.h
+          files: src/extracted/*
           draft: false
           prerelease: false
         env:

@@ -153,5 +153,4 @@ def main : IO Unit := do
 
   IO.println "Sampler extraction completed successfully"
 
-/-- Export for Lake build -/
-#eval main
+/-- Entry point for explicit CLI execution (`lake env lean ...`). -/

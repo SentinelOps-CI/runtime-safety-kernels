@@ -1,15 +1,11 @@
 import Lake
 open Lake DSL
 
-package runtime-safety-kernels {
-  -- add package configuration options here
+package runtime_safety_kernels where
   srcDir := "src"
-  -- dependencies
-  require lean from git "https://github.com/leanprover/lean4" @ "v4.8.0"
+
+  -- Dependency pinning for reproducible builds.
   require mathlib from git "https://github.com/leanprover-community/mathlib4" @ "v4.8.0"
-  -- require dataset-safety-specs from git "https://github.com/example/dataset-safety-specs" @ "main"
-  -- require model-asset-guard from git "https://github.com/example/model-asset-guard" @ "main"
-}
 
 @[default_target]
 lean_lib RuntimeSafetyKernels {

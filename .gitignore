@@ -13,6 +13,7 @@ lakefile.olean
 
 # Lake build directory
 build/
+.lake/
 
 # Extracted code
 src/extracted/
