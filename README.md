@@ -1,8 +1,14 @@
+<div align="center">
+
 # Runtime Safety Kernels
 
 Lean-based runtime kernels engineered for **reliability, auditability, and deterministic validation**.
 
 The project focuses on safety-critical runtime behavior across policy, concurrency, and shape handling, with strict documentation-to-gate alignment.
+
+</div>
+
+---
 
 ## Why This Repository Exists
 
